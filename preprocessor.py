@@ -21,23 +21,6 @@ SHARD_DIR = './tiny_ds/shards'
 # ===
 # Localization Dataset
 # ===
-'''
-read df, and get class mapping using class_id col
-
-
-inside torch dataset class __getitem__()
-  1. Read row from df
-  2. Get the image_id from row
-  3. load the dicom image
-  4. convert to png
-  5. get the xmin, ymin, xmax, ymax from the row. this will be the bbox
-  6. normalize the bboxes according to image height and width.
-  7. resize image, to TRAIN_IMAGE_HEIGHT, and TRAIN_IMAGE_WIDTH
-  8. get the class_id from the row too. this will be the class of the object
-  10. return a dict with keys: image, label, bbox_coords: tuple[
-
-The above guided llm to write dataset class below
-'''
 import torch
 from torch.utils.data import Dataset, DataLoader
 import pydicom
@@ -51,8 +34,12 @@ TRAIN_IMAGE_WIDTH = 512
 class LocalizationVinDrDS(Dataset):
   def __init__(self, csv_filepath, dicom_dir):
     super().__init__()
-    self.df = pd.read_csv(csv_filepath)
     self.dicom_dir = dicom_dir
+    dicom_files = {f.split('.')[0] for f in os.listdir(self.dicom_dir) if f.endswith('.dicom')}
+
+    self.df = pd.read_csv(csv_filepath)
+    self.df = self.df[self.df['image_id'].isin(dicom_files)]
+
   def __len__(self): return len(self.df)
   def __getitem__(self, idx):
     row = self.df.iloc[idx]

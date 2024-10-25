@@ -1,0 +1,33 @@
+# Hyperparameters
+lr: 0.0003
+batch_size: 16
+num_steps: 10000
+grad_accumulation_steps: 4  # Number of steps for gradient accumulation
+
+# lr scheduler
+# max steps: ~1epoch | warmup_steps: int(config['max_steps'] * 0.037) based on nanogpt | max_lr 3e-4 | min_lr: 3e-5
+max_steps: 7000
+warmup_steps: 259
+max_lr: 0.0001
+min_lr: 0.00001
+
+
+# Model Configuration
+model_name: "resnet50"
+pretrained_flag: true
+
+# Dataset & DataLoader Configuration
+dataset_path: "/path/to/dataset"
+num_workers: 4
+prefetch_factor: 2
+shard_size: 1024
+
+# Training and Checkpointing
+eval_interval: 500
+ckpt_interval: 1000
+ckpt_dir: "/path/to/checkpoints"
+do_ckpt: true
+
+# Run/Experiment Configuration
+run_name: "experiment_001"
+project_name: "my_project"

@@ -13,7 +13,7 @@ import gzip
 # Constants
 # ===
 SHARD_SIZE = 1024
-batch_size = 8
+batch_size = 1  # because dataloader is not compatible with localization labels
 CSV_FILEPATH = '/data/courses/2024/class_ImageSummerFall2024_jliang12/vinbigdata/train.csv'
 DICOM_PATH = '/data/courses/2024/class_ImageSummerFall2024_jliang12/vinbigdata/train'
 SHARD_DIR = '/scratch/rawhad/CSE507/practice_2_v2/shards'
@@ -54,23 +54,43 @@ class LocalizationVinDrDS(Dataset):
     dicom_path = os.path.join(self.dicom_dir, f"{image_id}.dicom")
     
     # Load the DICOM image
-    dicom_image = pydicom.dcmread(dicom_path).pixel_array
-    image: np.ndarray = cv2.resize(dicom_image, (TRAIN_IMAGE_WIDTH, TRAIN_IMAGE_HEIGHT))
+    dicom = pydicom.dcmread(dicom_path)
+    image = dicom.pixel_array
+    if "PhotometricInterpretation" in dicom:
+      if dicom.PhotometricInterpretation == "MONOCHROME1":
+        image = np.amax(image) - image
+
+    # to convert 16 bit image into 8 bit
+    slope = dicom.RescaleSlope if "RescaleSlope" in dicom else 1.0
+    intercept = dicom.RescaleIntercept if "RescaleIntercept" in dicom else 0.0
+    image = (image.astype(np.float32) * slope) + intercept
+    image = (image - image.min()) / (image.max() - image.min()) * 255
+    image = np.stack([image, image, image])
+    image = image.transpose(1, 2, 0).astype(np.uint8) / 255  # betwee [0, 1]
     
+    image: np.ndarray = cv2.resize(image, (TRAIN_IMAGE_WIDTH, TRAIN_IMAGE_HEIGHT)).transpose(2, 0, 1) # out shape: (C, H, W)
     # Filter rows for the current image_id
     rows = self.df[self.df['image_id'] == image_id]
     
     targets = []
-    orig_width, orig_height = dicom_image.shape
+    orig_width, orig_height = dicom.pixel_array.shape
     for _, row in rows.iterrows():
-      # Denormalize bounding box coordinates to final image size
-      xmin: float = (row.get('x_min', 0) / orig_width) * TRAIN_IMAGE_WIDTH
-      ymin: float = (row.get('y_min', 0) / orig_height) * TRAIN_IMAGE_HEIGHT
-      xmax: float = (row.get('x_max', orig_width) / orig_width) * TRAIN_IMAGE_WIDTH
-      ymax: float = (row.get('y_max', orig_height) / orig_height) * TRAIN_IMAGE_HEIGHT
+      labels = row['class_id']
+      if labels == 0:
+        xmin = 0.0
+        ymin = 0.0
+        xmax = 1.0
+        ymax = 1.0
+        pass
+      else:
+        # Denormalize bounding box coordinates to final image size
+        xmin: float = (row.get('x_min', 0) / orig_width) * TRAIN_IMAGE_WIDTH
+        ymin: float = (row.get('y_min', 0) / orig_height) * TRAIN_IMAGE_HEIGHT
+        xmax: float = (row.get('x_max', orig_width) / orig_width) * TRAIN_IMAGE_WIDTH
+        ymax: float = (row.get('y_max', orig_height) / orig_height) * TRAIN_IMAGE_HEIGHT
       
       targets.append({
-        "labels": row['class_id'],
+        "labels": labels,
         "bbox_coords": (xmin, ymin, xmax, ymax)
       })
 
@@ -80,7 +100,7 @@ class LocalizationVinDrDS(Dataset):
     }
 
 dataset = LocalizationVinDrDS(CSV_FILEPATH, DICOM_PATH)
-dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=6, pin_memory=True, prefetch_factor=128, drop_last=False)
+dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=6, pin_memory=True, prefetch_factor=170, drop_last=False)
 
 
 # ===

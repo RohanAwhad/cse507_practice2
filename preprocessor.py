@@ -32,36 +32,51 @@ import numpy as np
 TRAIN_IMAGE_HEIGHT = 512
 TRAIN_IMAGE_WIDTH = 512
 
+
+
 class LocalizationVinDrDS(Dataset):
-  def __init__(self, csv_filepath, dicom_dir):
+  def __init__(self, csv_filepath: str, dicom_dir: str) -> None:
     super().__init__()
     self.dicom_dir = dicom_dir
     dicom_files = {f.split('.')[0] for f in os.listdir(self.dicom_dir) if f.endswith('.dicom')}
-
     self.df = pd.read_csv(csv_filepath)
     self.df = self.df[self.df['image_id'].isin(dicom_files)]
+    # because faster rcnn expects 0 as no finding class id and we have 14 as no finding class, following steps are taken
+    self.df['class_id'] += 1
+    self.df.loc[self.df['class_id'] == 15, 'class_id'] = 0
+    self.unique_ids = self.df['image_id'].unique().tolist()
 
-  def __len__(self): return len(self.df)
-  def __getitem__(self, idx):
-    row = self.df.iloc[idx]
-    image_id = row['image_id']
+  def __len__(self) -> int:
+    return len(self.unique_ids)
+  
+  def __getitem__(self, idx: int) -> dict:
+    image_id = self.unique_ids[idx]
     dicom_path = os.path.join(self.dicom_dir, f"{image_id}.dicom")
     
     # Load the DICOM image
     dicom_image = pydicom.dcmread(dicom_path).pixel_array
     image: np.ndarray = cv2.resize(dicom_image, (TRAIN_IMAGE_WIDTH, TRAIN_IMAGE_HEIGHT))
     
-    # Normalize bounding box coordinates
+    # Filter rows for the current image_id
+    rows = self.df[self.df['image_id'] == image_id]
+    
+    targets = []
     orig_width, orig_height = dicom_image.shape
-    xmin: float = row.get('x_min', 0) / orig_width
-    ymin: float = row.get('y_min', 0) / orig_height
-    xmax: float = row.get('x_max', orig_width) / orig_width
-    ymax: float = row.get('y_max', orig_height) / orig_height
+    for _, row in rows.iterrows():
+      # Denormalize bounding box coordinates to final image size
+      xmin: float = (row.get('x_min', 0) / orig_width) * TRAIN_IMAGE_WIDTH
+      ymin: float = (row.get('y_min', 0) / orig_height) * TRAIN_IMAGE_HEIGHT
+      xmax: float = (row.get('x_max', orig_width) / orig_width) * TRAIN_IMAGE_WIDTH
+      ymax: float = (row.get('y_max', orig_height) / orig_height) * TRAIN_IMAGE_HEIGHT
+      
+      targets.append({
+        "labels": row['class_id'],
+        "bbox_coords": (xmin, ymin, xmax, ymax)
+      })
 
     return {
       "images": torch.tensor(image),
-      "labels": torch.tensor((row['class_id'], )),
-      "bbox_coords": torch.tensor((xmin, ymin, xmax, ymax))
+      "targets": targets
     }
 
 dataset = LocalizationVinDrDS(CSV_FILEPATH, DICOM_PATH)
@@ -86,28 +101,25 @@ shard_count = 0
 assert (SHARD_SIZE % batch_size) == 0, f'SHARD_SIZE should be perfectly divisible by batch_size, but got {SHARD_SIZE} % {batch_size} = {SHARD_SIZE % batch_size}'
 
 # TODO: use dynamic key names? they are repeated quite a lot
-curr_shard = {'images': [], 'labels': [], 'bbox_coords': []}
+curr_shard = {'images': [], 'targets': []}
 for batch in tqdm(dataloader, total=len(dataloader), desc="Saving shards"):
   curr_shard['images'].append(batch['images'].numpy())
-  curr_shard['labels'].append(batch['labels'].numpy())
-  curr_shard['bbox_coords'].append(batch['bbox_coords'].numpy())
+  curr_shard['targets'].extend(batch['targets'])
 
   if len(curr_shard['images']) >= SHARD_SIZE//batch_size:
     shard_path = os.path.join(SHARD_DIR, f"shard_{shard_count:04d}.gz")
     final_shard = {
       'images': np.concatenate(curr_shard['images'], axis=0),
-      'labels': np.concatenate(curr_shard['labels'], axis=0),
-      'bbox_coords': np.concatenate(curr_shard['bbox_coords'], axis=0),
+      'targets': curr_shard['targets'],
     }
     save_shard(final_shard, shard_path)
     shard_count += 1
-    curr_shard = {'images': [], 'labels': [], 'bbox_coords': []}
+    curr_shard = {'images': [], 'targets': []}
 
 if len(curr_shard['images']) == SHARD_SIZE//batch_size:
   shard_path = os.path.join(SHARD_DIR, f"shard_{shard_count:04d}.gz")
   final_shard = {
     'images': np.concatenate(curr_shard['images'], axis=0),
-    'labels': np.concatenate(curr_shard['labels'], axis=0),
-    'bbox_coords': np.concatenate(curr_shard['bbox_coords'], axis=0),
+    'targets': curr_shard['targets'],
   }
   save_shard(final_shard, shard_path)

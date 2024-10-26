@@ -12,10 +12,11 @@ import gzip
 # ===
 # Constants
 # ===
-batch_size = 2
-CSV_FILEPATH = './tiny_ds/tiny_train.csv'
-DICOM_PATH = './tiny_ds/ds'
-SHARD_DIR = './tiny_ds/shards'
+SHARD_SIZE = 1024
+batch_size = 8
+CSV_FILEPATH = '/data/courses/2024/class_ImageSummerFall2024_jliang12/vinbigdata/train.csv'
+DICOM_PATH = '/data/courses/2024/class_ImageSummerFall2024_jliang12/vinbigdata/train'
+SHARD_DIR = '/scratch/rawhad/CSE507/practice_2_v2/shards'
 
 
 # ===
@@ -64,7 +65,7 @@ class LocalizationVinDrDS(Dataset):
     }
 
 dataset = LocalizationVinDrDS(CSV_FILEPATH, DICOM_PATH)
-dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=6, pin_memory=True, prefetch_factor=64, drop_last=True)
+dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=6, pin_memory=True, prefetch_factor=128, drop_last=False)
 
 
 # ===
@@ -82,6 +83,7 @@ def load_shard(filepath: str) -> dict[str, np.array]:
 
 os.makedirs(SHARD_DIR, exist_ok=True)
 shard_count = 0
+assert (SHARD_SIZE % batch_size) == 0, f'SHARD_SIZE should be perfectly divisible by batch_size, but got {SHARD_SIZE} % {batch_size} = {SHARD_SIZE % batch_size}'
 
 # TODO: use dynamic key names? they are repeated quite a lot
 curr_shard = {'images': [], 'labels': [], 'bbox_coords': []}
@@ -90,7 +92,7 @@ for batch in tqdm(dataloader, total=len(dataloader), desc="Saving shards"):
   curr_shard['labels'].append(batch['labels'].numpy())
   curr_shard['bbox_coords'].append(batch['bbox_coords'].numpy())
 
-  if len(curr_shard['images']) >= 1024//batch_size:
+  if len(curr_shard['images']) >= SHARD_SIZE//batch_size:
     shard_path = os.path.join(SHARD_DIR, f"shard_{shard_count:04d}.gz")
     final_shard = {
       'images': np.concatenate(curr_shard['images'], axis=0),
@@ -101,7 +103,7 @@ for batch in tqdm(dataloader, total=len(dataloader), desc="Saving shards"):
     shard_count += 1
     curr_shard = {'images': [], 'labels': [], 'bbox_coords': []}
 
-if len(curr_shard['images']) > 0:
+if len(curr_shard['images']) == SHARD_SIZE//batch_size:
   shard_path = os.path.join(SHARD_DIR, f"shard_{shard_count:04d}.gz")
   final_shard = {
     'images': np.concatenate(curr_shard['images'], axis=0),

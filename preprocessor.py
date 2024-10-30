@@ -54,7 +54,11 @@ class LocalizationVinDrDS(Dataset):
     dicom_path = os.path.join(self.dicom_dir, f"{image_id}.dicom")
     
     # Load the DICOM image
-    dicom = pydicom.dcmread(dicom_path)
+    try:
+        dicom = pydicom.dcmread(dicom_path)
+    except Exception as e:
+        print(f"Error reading DICOM file {dicom_path}: {e}")
+        return None  # Skip this file if it cannot be read
     image = dicom.pixel_array
     if "PhotometricInterpretation" in dicom:
       if dicom.PhotometricInterpretation == "MONOCHROME1":
@@ -100,7 +104,8 @@ class LocalizationVinDrDS(Dataset):
     }
 
 dataset = LocalizationVinDrDS(CSV_FILEPATH, DICOM_PATH)
-dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=6, pin_memory=True, prefetch_factor=170, drop_last=False)
+#dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=6, prefetch_factor=32, drop_last=False)  # would have taken 2 hours
+dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=0, drop_last=False)  # took 7.5 hours
 
 
 # ===
@@ -123,6 +128,7 @@ assert (SHARD_SIZE % batch_size) == 0, f'SHARD_SIZE should be perfectly divisibl
 # TODO: use dynamic key names? they are repeated quite a lot
 curr_shard = {'images': [], 'targets': []}
 for batch in tqdm(dataloader, total=len(dataloader), desc="Saving shards"):
+  if batch is None: continue
   curr_shard['images'].append(batch['images'].numpy())
   curr_shard['targets'].extend(batch['targets'])
 

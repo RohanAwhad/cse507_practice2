@@ -2,9 +2,9 @@
 
 #SBATCH -N 1            # number of nodes
 #SBATCH -p general
-#SBATCH -c 8            # number of cores 
-#SBATCH -t 0-04:00:00   # time in d-hh:mm:ss
-#SBATCH --mem=32G
+#SBATCH -c 2            # number of cores 
+#SBATCH -t 0-10:00:00   # time in d-hh:mm:ss
+#SBATCH --mem=56G
 #SBATCH -o slurm.%j.out # file to save job's STDOUT (%j = JobId)
 #SBATCH -e slurm.%j.err # file to save job's STDERR (%j = JobId)
 #SBATCH --mail-type=ALL # Send an e-mail when a job starts, stops, or fails

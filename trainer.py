@@ -70,7 +70,10 @@ def load_config(config_file):
 
 
 @functools.lru_cache(maxsize=2)
-def load_shard(filename: str) -> np.ndarray: return np.load(filename)
+def load_shard(filepath: str) -> dict[str, np.array]:
+  # Load the compressed object
+  with gzip.open(filepath, 'rb') as f:
+    return pickle.load(f)
 
 class ShardedDataset(Dataset):
     def __init__(self, shard_paths: list[str], shard_size: int):

@@ -16,7 +16,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
 torch.set_float32_matmul_precision("high")
-#torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.benchmark = True
 
 # === Logger Classes === #
 class Logger(ABC):
@@ -25,8 +25,8 @@ class Logger(ABC):
         pass
 
 class WandbLogger(Logger):
-    def __init__(self, project_name, run_name):
-        self.run = wandb.init(project=project_name, name=run_name)
+    def __init__(self, project_name, run_name, config):
+        self.run = wandb.init(project=project_name, name=run_name, config=config)
 
     def log(self, data: dict, step: int):
         self.run.log(data, step=step)
@@ -82,26 +82,34 @@ class ShardedDataset(Dataset):
         shard_idx = index // self.shard_size
         shard = load_shard(self.shard_paths[shard_idx])
         example = shard[index % self.shard_size] 
+        return {'images': example['images'], 'targets': example['targets']}
 
-        raise NotImplementedError('__getitem__ is not implemented in ShardedDataset')
-        image, label = example[:3], example[3:]
-        return image, label
+def collate_fn(batch):
+    targets = [{'boxes': item['targets']['bbox_coords'], 'labels': item['targets']['labels']} for item in batch]
+    images = torch.tensor([item['images'] for item in batch])
+    return {'images': images, 'targets': targets}
 
-
-def build_model(model_name: str, pretrained_flag: bool) -> nn.Module:
+def build_model(model_name: str, pretrained_flag: bool, num_classes: int) -> nn.Module:
     """Load or initialize a model (placeholder)."""
-    raise NotImplementedError('build_model is not implemented')
-    model = None  # Placeholder: Replace with model initialization logic
+    # setup model
+    import torchvision
+    if pretrained_flag:
+        model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights=torchvision.models.detection.FasterRCNN_ResNet50_FPN_Weights.DEFAULT, num_classes=num_classes)
+    else:
+        model = torchvision.models.detection.fasterrcnn_resnet50_fpn(num_classes=num_classes)
     return model
 
-def criterion(predictions: torch.Tensor, targets: torch.Tensor) -> Dict[str, torch.Tensor | float]:
-    """Returns a dict with the final loss in key 'total_loss'"""
-    raise NotImplementedError('criterion is not implemented')
-
-def load_dataset(dataset_path: str, shard_size: int) -> Tuple[Dataset, Dataset]:
-    """Placeholder for dataset loading and sharding logic."""
-    raise NotImplementedError('load_dataset is not implemented')
-    train_dataset, val_dataset = None, None  # Placeholder
+def load_dataset(dataset_path: str, shard_size: int, n_val_shards: int) -> Tuple[Dataset, Dataset]:
+    all_shards = glob.glob(f"{dataset_path}/*.gz")
+    all_shards = sorted(
+        map(lambda x: (x, int(os.path.basename(x).split(".")[0].split("_")[1])), all_shards), key=lambda x: x[1]
+    )
+    random.shuffle(all_shards)
+    all_shards = [x[0] for x in all_shards]
+    val_shards = all_shards[:n_val_shards]
+    train_shards = all_shards[n_val_shards:]
+    train_dataset = ShardedDataset(shard_paths=train_shards, shard_size=shard_size)
+    val_dataset = ShardedDataset(shard_paths=val_shards, shard_size=shard_size)
     return train_dataset, val_dataset
 
 
@@ -116,36 +124,53 @@ def evaluate(model: nn.Module, val_loader: DataLoader, step: int, logger: Logger
 def save_checkpoint(model: nn.Module, optimizer: torch.optim.Optimizer, ckpt_dir: str, step: int) -> None:
     """Placeholder for checkpointing logic."""
     model.eval()
-    raise NotImplementedError('save_checkpoint is not implemented')
     ckpt_path = os.path.join(ckpt_dir, f"checkpoint_step_{step}.pth")
     torch.save({'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict()}, ckpt_path)
     print(f"Checkpoint saved at step {step}")
 
+def next_batch(loader):
+    iterator = iter(loader)
+    while True:
+        try:
+            batch = next(iterator)
+            yield batch
+        except StopIteration:
+            iterator = iter(loader)
+
 # === Trainer Scaffold === #
 def main():
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device}")
     config = load_config()
-    logger = WandbLogger(project_name=config.get('project_name', 'default_project'), run_name=config['run_name'])
-    model = build_model(config['model_name'], config['pretrained_flag'])
-    model = model.to(device)
-    print('Model has been loaded on device')
+    logger = WandbLogger(project_name=config.get('project_name', 'default_project'), run_name=config['run_name'], config=config)
     train_dataset, val_dataset = load_dataset(config['dataset_path'], config['shard_size'])
     train_loader = DataLoader(
         train_dataset,
         batch_size=config['batch_size'],
         num_workers=config['num_workers'],
         pin_memory=True,
-        prefetch_factor=config['prefetch_factor']
+        prefetch_factor=config['prefetch_factor'],
+        collate_fn=collate_fn,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=config['batch_size'],
         num_workers=config['num_workers'],
-        pin_memory=True,  # Hardcoded based on your instructions
-        prefetch_factor=config['prefetch_factor']
+        pin_memory=True,
+        prefetch_factor=config['prefetch_factor'],
+        collate_fn=collate_fn,
     )
     print('DataLoaders created')
+
+    # TODO: remove this. just testing if loader works fine
+    for batch in train_loader:
+        print(batch)
+        exit(0)
+
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}")
+    model = build_model(config['model_name'], config['pretrained_flag'], len(config['class_mapping']))
+    model = model.to(device)
+    print('Model has been loaded on device')
     # TODO: calculate save, and update where you are in the dataloader so you can restart training
 
     # Optimizer placeholder
@@ -154,34 +179,41 @@ def main():
 
     # Main training loop
     step = 0
-    while step < config['num_steps']:  # this could also just be while True
-        for batch in train_loader:
-            step += 1
+    batch_gen = next_batch(train_loader)
+    grad_accumulation_steps = config["desired_batch_size"] // config["batch_size"]
+    while step < config["num_steps"]:
+        step += 1
+        if step % config["eval_interval"] == 0:
+            print(f"Step {step}: Performing evaluation")
+            evaluate(model, val_loader, device, step, logger, config["class_mapping"])
+        if step % config["ckpt_interval"] == 0 and config["do_ckpt"]:
+            print(f"Step {step}: Saving checkpoint")
+            save_checkpoint(model, os.path.join(config["ckpt_dir"], config["run_name"]), step)
+        # train
+        model.train()
+        optimizer.zero_grad()
+        step_loss = defaultdict(int)
+        # gradient accumulation
+        for _ in range(grad_accumulation_steps):
+            batch = next(batch_gen)
+            images, targets = batch['images'], batch['targets']
+            images, targets = images.to(device), [{'boxes': x['boxes'].to(device)} for x in targets]
 
-            if step % config['eval_interval'] == 0:
-                print(f"Step {step}: Performing evaluation")
-                evaluate(model, val_loader, step, logger)
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                losses = model(images, targets)
+                losses['total_loss'] = losses['loss_classifier'] + losses['loss_box_reg'] + losses['loss_objectness'] + losses['loss_rpn_box_reg']
+                losses = {k: v/grad_accumulation_steps for k, v in losses.items()}
+                loss = losses["total_loss"]
+            loss.backward()
+            for k, v in losses: step_loss[k] += v.item()
+        lr = lr_scheduler.get_lr(step)
+        for param_group in optimizer.param_groups: param_group["lr"] = lr
+        optimizer.step()
+        log_data = dict(train_loss=step_loss, lr=lr)
+        logger.log(log_data, step)
 
-            if step % config['ckpt_interval'] == 0 and config['do_ckpt']:
-                print(f"Step {step}: Saving checkpoint")
-                save_checkpoint(model, optimizer, config['ckpt_dir'], step)
-            
-            # Placeholder for model training step
-            model.train()
-            raise NotImplementedError('training loop is not implemented')
-            # Example: output = model(batch['input'])
-            # loss = compute_loss(output, batch['target'])
-            # optimizer.zero_grad()
-            # loss.backward()
-            # optimizer.step()
-
-            # Log training loss or metrics using the WandbLogger
-            training_metrics = {"loss": 0.1}  # Placeholder for actual loss value
-            logger.log(training_metrics, step)
-
-            if step >= config['num_steps']:
-                break
-
+        if step >= config["num_steps"]: break
+    batch_gen.close()
     logger.log({"status": "Training finished"}, step=step)
 
 if __name__ == "__main__":

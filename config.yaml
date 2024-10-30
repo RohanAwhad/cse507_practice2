@@ -1,33 +1,40 @@
 # Hyperparameters
-lr: 0.0003
-batch_size: 16
-num_steps: 10000
-grad_accumulation_steps: 4  # Number of steps for gradient accumulation
+desired_batch_size: 16
+batch_size: 8
+num_steps: 100
+n_val_shards: 1
 
 # lr scheduler
 # max steps: ~1epoch | warmup_steps: int(config['max_steps'] * 0.037) based on nanogpt | max_lr 3e-4 | min_lr: 3e-5
-max_steps: 7000
-warmup_steps: 259
+max_steps: 50
+warmup_steps: 10
 max_lr: 0.0001
 min_lr: 0.00001
 
-
 # Model Configuration
-model_name: "resnet50"
+model_name: ""  # faster-rcnn has only one model config so using that as default
 pretrained_flag: true
 
 # Dataset & DataLoader Configuration
-dataset_path: "/path/to/dataset"
-num_workers: 4
-prefetch_factor: 2
+dataset_path: "/scratch/rawhad/CSE507/practice_2_v2/tiny_ds"
+num_workers: 0
+prefetch_factor: null
 shard_size: 1024
 
 # Training and Checkpointing
-eval_interval: 500
-ckpt_interval: 1000
-ckpt_dir: "/path/to/checkpoints"
+eval_interval: 10
+ckpt_interval: 5000
+ckpt_dir: "/scratch/rawhad/CSE507/practice_2_v2/models"
 do_ckpt: true
 
 # Run/Experiment Configuration
-run_name: "experiment_001"
-project_name: "my_project"
+run_name: "v2_test_1"
+project_name: "cse507_practice2"
+
+# Custom
+class_mapping:
+  background: 0
+  right_lung: 1
+  left_lung: 2
+  heart: 3
+

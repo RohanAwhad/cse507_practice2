@@ -16,7 +16,7 @@ model_name: ""  # faster-rcnn has only one model config so using that as default
 pretrained_flag: true
 
 # Dataset & DataLoader Configuration
-dataset_path: "/scratch/rawhad/CSE507/practice_2_v2/tiny_ds"
+dataset_path: "/scratch/rawhad/CSE507/practice_2_v2/tiny_shards"
 num_workers: 0
 prefetch_factor: null
 shard_size: 1024
@@ -33,8 +33,19 @@ project_name: "cse507_practice2"
 
 # Custom
 class_mapping:
-  background: 0
-  right_lung: 1
-  left_lung: 2
-  heart: 3
+  No finding: 0
+  Aortic enlargement: 1
+  Atelectasis: 2
+  Calcification: 3
+  Cardiomegaly: 4
+  Consolidation: 5
+  ILD: 6
+  Infiltration: 7
+  Lung Opacity: 8
+  Nodule/Mass: 9
+  Other lesion: 10
+  Pleural effusion: 11
+  Pleural thickening: 12
+  Pneumothorax: 13
+  Pulmonary fibrosis: 14
 

@@ -1,13 +1,18 @@
 import argparse
 import functools
+import glob
+import gzip
 import math
 import numpy as np
 import os
+import pickle
+import random
 import sys
 import wandb
 import yaml
 
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from typing import Tuple, Dict
 
 import torch
@@ -60,7 +65,7 @@ class CosineLRScheduler:
 
 
 # === Utility to load YAML configuration === #
-def load_config(config_file):
+def load_config():
     if len(sys.argv) < 2:
         print('Please provide a config.yaml path as arg')
         exit(0)
@@ -84,11 +89,11 @@ class ShardedDataset(Dataset):
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
         shard_idx = index // self.shard_size
         shard = load_shard(self.shard_paths[shard_idx])
-        example = shard[index % self.shard_size] 
-        return {'images': example['images'], 'targets': example['targets']}
+        idx = index % self.shard_size
+        return {'images': shard['images'][idx], 'targets': shard['targets'][idx]}
 
 def collate_fn(batch):
-    targets = [{'boxes': item['targets']['bbox_coords'], 'labels': item['targets']['labels']} for item in batch]
+    targets = [{'boxes': torch.tensor(item['targets']['bbox_coords']), 'labels': torch.tensor(item['targets']['labels'])} for item in batch]
     images = torch.tensor([item['images'] for item in batch])
     return {'images': images, 'targets': targets}
 
@@ -97,7 +102,10 @@ def build_model(model_name: str, pretrained_flag: bool, num_classes: int) -> nn.
     # setup model
     import torchvision
     if pretrained_flag:
-        model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights=torchvision.models.detection.FasterRCNN_ResNet50_FPN_Weights.DEFAULT, num_classes=num_classes)
+        model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights=torchvision.models.detection.FasterRCNN_ResNet50_FPN_Weights.DEFAULT)
+        # change the head
+        in_features = model.roi_heads.box_predictor.cls_score.in_features
+        model.roi_heads.box_predictor = torchvision.models.detection.faster_rcnn.FastRCNNPredictor(in_features, num_classes)
     else:
         model = torchvision.models.detection.fasterrcnn_resnet50_fpn(num_classes=num_classes)
     return model
@@ -144,7 +152,7 @@ def next_batch(loader):
 def main():
     config = load_config()
     logger = WandbLogger(project_name=config.get('project_name', 'default_project'), run_name=config['run_name'], config=config)
-    train_dataset, val_dataset = load_dataset(config['dataset_path'], config['shard_size'])
+    train_dataset, val_dataset = load_dataset(config['dataset_path'], config['shard_size'], config['n_val_shards'])
     train_loader = DataLoader(
         train_dataset,
         batch_size=config['batch_size'],
@@ -166,7 +174,7 @@ def main():
     # TODO: remove this. just testing if loader works fine
     for batch in train_loader:
         print(batch)
-        exit(0)
+        break
 
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -177,7 +185,7 @@ def main():
     # TODO: calculate save, and update where you are in the dataloader so you can restart training
 
     # Optimizer placeholder
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config['lr'])
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config['max_lr'])
     lr_scheduler = CosineLRScheduler(config["warmup_steps"], config["max_steps"], config["max_lr"], config["min_lr"])
 
     # Main training loop
@@ -200,7 +208,7 @@ def main():
         for _ in range(grad_accumulation_steps):
             batch = next(batch_gen)
             images, targets = batch['images'], batch['targets']
-            images, targets = images.to(device), [{'boxes': x['boxes'].to(device)} for x in targets]
+            images, targets = images.to(device), [{k: v.to(device) for k, v in x.items()} for x in targets]
 
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 losses = model(images, targets)

@@ -76,11 +76,12 @@ class LocalizationVinDrDS(Dataset):
     # Filter rows for the current image_id
     rows = self.df[self.df['image_id'] == image_id]
     
-    targets = []
+    labels = []
+    bboxes = []
     orig_width, orig_height = dicom.pixel_array.shape
     for _, row in rows.iterrows():
-      labels = row['class_id']
-      if labels == 0:
+      cid = row['class_id']
+      if cid == 0:
         xmin = 0.0
         ymin = 0.0
         xmax = 1.0
@@ -93,14 +94,12 @@ class LocalizationVinDrDS(Dataset):
         xmax: float = (row.get('x_max', orig_width) / orig_width) * TRAIN_IMAGE_WIDTH
         ymax: float = (row.get('y_max', orig_height) / orig_height) * TRAIN_IMAGE_HEIGHT
       
-      targets.append({
-        "labels": labels,
-        "bbox_coords": (xmin, ymin, xmax, ymax)
-      })
+      labels.append(cid)
+      bboxes.append((xmin, ymin, xmax, ymax))
 
     return {
       "images": torch.tensor(image),
-      "targets": targets
+      "targets": {'labels': labels, 'bbox': bboxes}
     }
 
 dataset = LocalizationVinDrDS(CSV_FILEPATH, DICOM_PATH)
@@ -130,7 +129,7 @@ curr_shard = {'images': [], 'targets': []}
 for batch in tqdm(dataloader, total=len(dataloader), desc="Saving shards"):
   if batch is None: continue
   curr_shard['images'].append(batch['images'].numpy())
-  curr_shard['targets'].extend(batch['targets'])
+  curr_shard['targets'].append(batch['targets'])
 
   if len(curr_shard['images']) >= SHARD_SIZE//batch_size:
     shard_path = os.path.join(SHARD_DIR, f"shard_{shard_count:04d}.gz")

@@ -93,8 +93,8 @@ class ShardedDataset(Dataset):
         return {'images': shard['images'][idx], 'targets': shard['targets'][idx]}
 
 def collate_fn(batch):
-    targets = [{'boxes': torch.tensor(item['targets']['bbox_coords']), 'labels': torch.tensor(item['targets']['labels'])} for item in batch]
-    images = torch.tensor([item['images'] for item in batch])
+    targets = [{'boxes': torch.tensor(item['targets']['bbox']).float(), 'labels': torch.tensor(item['targets']['labels']).long()} for item in batch]
+    images = torch.tensor([item['images'] for item in batch]).float()
     return {'images': images, 'targets': targets}
 
 def build_model(model_name: str, pretrained_flag: bool, num_classes: int) -> nn.Module:
@@ -210,13 +210,12 @@ def main():
             images, targets = batch['images'], batch['targets']
             images, targets = images.to(device), [{k: v.to(device) for k, v in x.items()} for x in targets]
 
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                losses = model(images, targets)
-                losses['total_loss'] = losses['loss_classifier'] + losses['loss_box_reg'] + losses['loss_objectness'] + losses['loss_rpn_box_reg']
-                losses = {k: v/grad_accumulation_steps for k, v in losses.items()}
-                loss = losses["total_loss"]
+            losses = model(images, targets)
+            losses['total_loss'] = losses['loss_classifier'] + losses['loss_box_reg'] + losses['loss_objectness'] + losses['loss_rpn_box_reg']
+            losses = {k: v/grad_accumulation_steps for k, v in losses.items()}
+            loss = losses["total_loss"]
             loss.backward()
-            for k, v in losses: step_loss[k] += v.item()
+            for k, v in losses.items(): step_loss[k] += v.item()
         lr = lr_scheduler.get_lr(step)
         for param_group in optimizer.param_groups: param_group["lr"] = lr
         optimizer.step()

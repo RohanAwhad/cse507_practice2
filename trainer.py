@@ -441,4 +441,42 @@ def main():
     logger.log({"status": "Training finished"}, step=step)
 
 if __name__ == "__main__":
-    main()
+    #main()
+    # test plot_froc and plot_sample using dummy data or sample data
+    # Example data for testing (you can replace this with actual data)
+    sample_images = torch.rand(4, 3, 256, 256)  # 4 images, 3 channels, 256x256
+    sample_predictions = [
+        {
+            'boxes': torch.tensor([[50, 50, 100, 100], [150, 150, 200, 200]]),
+            'scores': torch.tensor([0.9, 0.8]),
+            'labels': torch.tensor([1, 1])
+        } for _ in range(4)
+    ]
+    sample_ground_truths = [
+        {
+            'boxes': torch.tensor([[60, 60, 110, 110], [140, 140, 190, 190]]),
+            'labels': torch.tensor([1, 1])
+        } for _ in range(4)
+    ]
+
+    idx2class = {1: 'Class 1'}
+
+    # Plot sample images with predictions and ground truths
+    fig_sample = plot_sample(sample_images, sample_predictions, sample_ground_truths, idx2class)
+    plt.show(fig_sample)
+
+    # Example results for testing plot_froc (replace with actual results)
+    sample_results = {
+        'average': {
+            'llf': [0.1, 0.2, 0.3],
+            'nlf': [0.1, 0.15, 0.2]
+        },
+        1: {
+            'llf': [0.15, 0.25, 0.35],
+            'nlf': [0.05, 0.1, 0.15]
+        }
+    }
+
+    # Plot FROC curve
+    fig_froc = plot_froc(sample_results, step=0, idx2class=idx2class)
+    plt.show(fig_froc)

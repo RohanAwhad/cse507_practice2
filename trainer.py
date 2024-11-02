@@ -3,6 +3,7 @@ import functools
 import glob
 import gzip
 import math
+import matplotlib.pyplot as plt
 import numpy as np
 import os
 import pickle
@@ -13,12 +14,16 @@ import yaml
 
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from typing import Tuple, Dict
+from sklearn.metrics import auc
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision
 from torch.utils.data import DataLoader, Dataset
+from torchmetrics import ROC
+
 
 torch.set_float32_matmul_precision("high")
 torch.backends.cudnn.benchmark = True
@@ -124,13 +129,227 @@ def load_dataset(dataset_path: str, shard_size: int, n_val_shards: int) -> Tuple
     return train_dataset, val_dataset
 
 
+# ===
+# Evaluation
+# ===
+def apply_nms(pred_dict):
+    scores, boxes, lambda_nms = pred_dict['scores'], pred_dict['boxes'], 0.2
+    selected_indices = []
+    for ix, (score, box) in enumerate(zip(scores, boxes)):
+        for other_box in boxes[selected_indices]:
+            if intersection_over_union(box, other_box) > lambda_nms: break
+        else: selected_indices.append(ix)
+    return {'scores':pred_dict['scores'][selected_indices], 'boxes':pred_dict['boxes'][selected_indices], 'labels': pred_dict['labels'][selected_indices]}
+
+    
 @torch.no_grad()
-def evaluate(model: nn.Module, val_loader: DataLoader, step: int, logger: Logger) -> None:
-    """Placeholder for evaluation logic."""
+def evaluate(model: nn.Module, val_loader: DataLoader, step: int, logger: Logger, class_mappings: dict[str, int]) -> None:
     model.eval()
     raise NotImplementedError('evaluate is not implemented')
-    eval_metrics = {"accuracy": 0.9}  # Placeholder for evaluation metrics
+
+    idx2class = {v:k for k, v in class_mappings.items()}
+    all_predictions = []
+    all_ground_truths = []
+    batch_size = None
+    first_batch_images = None
+    for batch in val_loader:
+        images, targets = batch['images'].to(device), batch['targets']
+        preds = apply_nms(model(images))
+        preds = [{k: v.cpu() for k, v in x.items()} for x in preds]
+        all_predictions.extend(preds)
+
+        if first_batch_images is None:
+            first_batch_images = images[:batch_size]
+            first_batch_preds = preds[:batch_size]
+            first_batch_truths = all_ground_truths[:batch_size]
+    fig_sample = plot_sample(first_batch_images, first_batch_preds, first_batch_truths, class_mappings)
+    results = calculate_froc(all_predictions, all_ground_truths)
+    froc_fig = plot_froc(results, step, idx2class)
+    auc_froc = auc(results['average']['nlf'], results['average']['llf'])
+    eval_metrics = {"auc_froc": auc_froc, 'test_images': fig_sample, 'froc_curves': froc_fig}  # Placeholder for evaluation metrics
     logger.log(eval_metrics, step)
+
+
+def plot_sample(images: torch.Tensor, predictions: list[dict], ground_truths: list[dict], idx2class: dict[int, str]) -> plt.Figure:
+    import matplotlib.pyplot as plt
+    import torchvision.transforms as T
+
+    transform = T.ToPILImage()
+    num_images: int = len(images)
+    fig, axes = plt.subplots(1, num_images, figsize=(15, 5))
+    
+    if num_images == 1:
+        axes = [axes]
+
+    for idx, (img, pred, truths) in enumerate(zip(images, predictions, ground_truths)):
+        ax = axes[idx]
+        img = transform(img.cpu())
+        ax.imshow(img)
+
+        pred_boxes = pred['boxes']
+        pred_scores = pred['scores']
+        pred_labels = pred['labels']
+
+        # Select only boxes with score >= 0.5
+        for box, label, score in zip(pred_boxes, pred_labels, pred_scores):
+            if score >= 0.5:
+                xmin, ymin, xmax, ymax = box
+                rect = plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin, fill=False, color='blue', linewidth=2)
+                ax.add_patch(rect)
+                label_name: str = idx2class[int(label)]
+                ax.text(xmin, ymin, f'{label_name}: {score:.2f}', color='red', fontsize=8, bbox=dict(facecolor='yellow', alpha=0.5))
+
+        # Plot truth boxes
+        truth_boxes = truths['boxes']
+        truth_labels = truths['labels']
+        for box, label in zip(truth_boxes, truth_labels):
+            xmin, ymin, xmax, ymax = box
+            rect = plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin, fill=False, color='green', linewidth=2)
+            ax.add_patch(rect)
+            label_name: str = idx2class[int(label)]
+            ax.text(xmin, ymin, label_name, color='green', fontsize=8, bbox=dict(facecolor='yellow', alpha=0.5))
+        ax.axis('off')
+    plt.tight_layout()
+    return fig
+
+
+
+def calculate_froc(predictions, truths):
+    '''
+    predictions: list[dict[str, torch.tensor]] => 3 Keys: boxes: torch.tensor[N, 4] (xmin, ymin, xmax, ymax), labels: torch.tensor[N], scores: torch.tensor[N]
+    truths: list[dict[str, torch.tensor]] => 2 Keys: boxes: torch.tensor[N, 4] (xmin, ymin, xmax, ymax), labels: torch.tensor[N]
+
+    Calculate FROC for each class and overall froc score for each threshold.
+    # filter based on label
+    # for th in thresholds
+    #   apply th to filtered preds
+    #   for p, l in zip(predictions, labels):
+    #       for obj in l:
+    #           find all the pred_dets from p with iou>0.2 with obj, select the one with highest score
+    #           record it as true positive
+    #       do it for all obj in l, and then the count of not matched_set is your false positive
+    #   get average tp and fp
+    #   record the avg tp and fp, along with th for this label
+    # lastly I want to have a dict that is: {class_id: {llf: [tp_at_0.1, tp_at_0.2 ...], nlf: [fp_at_0.1, fp_at_0.2 ...]}, ..., average: {llf: [...], nlf: [...]}}
+    '''
+    thresholds = [x/10 for x in range(1, 11)]
+    iou_threshold = 0.2
+    def compute_iou(box1, box2):
+        # Calculate intersection
+        x1 = max(box1[0], box2[0])
+        y1 = max(box1[1], box2[1])
+        x2 = min(box1[2], box2[2])
+        y2 = min(box1[3], box2[3])
+        intersection = max(0, x2 - x1) * max(0, y2 - y1)
+        # Calculate union
+        box1_area = (box1[2] - box1[0]) * (box1[3] - box1[1])
+        box2_area = (box2[2] - box2[0]) * (box2[3] - box2[1])
+        union = box1_area + box2_area - intersection
+        return intersection / union if union != 0 else 0
+    
+    results = {class_id: {"llf": [], "nlf": []} for class_id in set(label.item() for truth in truths for label in truth['labels'])}
+    results['average'] = {"llf": [], "nlf": []}
+    for class_id in results.keys():
+        if class_id == 'average': continue
+        for th in thresholds:
+            for pred, truth in zip(predictions, truths):
+                pred_boxes = pred['boxes']
+                pred_scores = pred['scores']
+                pred_labels = pred['labels']
+                
+                truth_boxes = truth['boxes']
+                truth_labels = truth['labels']
+                
+                # Filter predictions and truths based on class_id
+                pred_indices = (pred_labels == class_id).nonzero(as_tuple=True)[0]
+                truth_indices = (truth_labels == class_id).nonzero(as_tuple=True)[0]
+                
+                pred_boxes = pred_boxes[pred_indices]
+                pred_scores = pred_scores[pred_indices]
+                
+                truth_boxes = truth_boxes[truth_indices]
+                
+                matched_truths = set()
+                
+                # Apply threshold
+                th_indices = (pred_scores >= th).nonzero(as_tuple=True)[0]
+                pred_boxes = pred_boxes[th_indices]
+                pred_scores = pred_scores[th_indices]
+                
+                # Evaluate each truth object
+                for truth_idx, truth_box in enumerate(truth_boxes):
+                    max_iou = 0
+                    best_pred_idx = -1
+                    
+                    # Find best matching prediction
+                    for pred_idx, pred_box in enumerate(pred_boxes):
+                        if pred_idx in matched_truths: continue
+                        iou = compute_iou(truth_box, pred_box)
+                        if iou > iou_threshold and iou > max_iou:
+                            max_iou = iou
+                            best_pred_idx = pred_idx
+                    if best_pred_idx != -1: matched_truths.add(best_pred_idx)
+                
+                # Calculate false positives
+                tpr.append(len(matched_truths)/len(truth_boxes) if n_targets else 0)
+                fpr.append(len(pred_boxes) - len(matched_truths)/len(pred_boxes) if len(pred_boxes) else 0)
+            
+            avg_tp = sum(tpr) / len(tpr) if tpr else 0
+            avg_fp = sum(fpr) / len(fpr) if fpr else 0
+            
+            results[class_id]['llf'].append(avg_tp)
+            results[class_id]['nlf'].append(avg_fp)
+    
+    # Calculate average results
+    num_classes = len(results) - 1
+    for th_index in range(len(thresholds)):
+        avg_llf = sum(results[class_id]['llf'][th_index] for class_id in results if class_id != 'average') / num_classes
+        avg_nlf = sum(results[class_id]['nlf'][th_index] for class_id in results if class_id != 'average') / num_classes
+        results['average']['llf'].append(avg_llf)
+        results['average']['nlf'].append(avg_nlf)
+    return results
+
+
+
+def plot_froc(results: dict[str | int, dict[str, list[int]]], step: int, idx2class: dict[int, str]) -> plt.Figure:
+    # Initialize the figure with subplots
+    num_classes = len(results)
+    fig, axes = plt.subplots(num_classes, 1, figsize=(10, 8 * num_classes))
+
+    # Ensure axes is a list even if there's only one subplot
+    if num_classes == 1:
+        axes = [axes]
+
+    # Plot 'average' class in the first subplot
+    if 'average' in results:
+        metrics = results['average']
+        axes[0].plot(metrics['nlf'], metrics['llf'], label='Average')
+        axes[0].set_title('Average')
+        axes[0].set_xlabel('False Positives per Image (NLF)')
+        axes[0].set_ylabel('True Positive Rate (LLF)')
+        axes[0].grid(True)
+        axes[0].legend(loc='best')
+
+    # Plot each class starting from 0 class_id to the end
+    for i, (class_id, metrics) in enumerate(results.items()):
+        if class_id == 'average':
+            continue
+        class_name = idx2class.get(class_id, f'Class {class_id}')
+        ax = axes[i]
+        ax.plot(metrics['nlf'], metrics['llf'], label=class_name)
+        ax.set_title(class_name)
+        ax.set_xlabel('False Positives per Image (NLF)')
+        ax.set_ylabel('True Positive Rate (LLF)')
+        ax.grid(True)
+        ax.legend(loc='best')
+
+    # Adjust layout
+    plt.tight_layout()
+    return fig
+
+
+# ===
+
 
 def save_checkpoint(model: nn.Module, optimizer: torch.optim.Optimizer, ckpt_dir: str, step: int) -> None:
     """Placeholder for checkpointing logic."""

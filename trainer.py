@@ -22,7 +22,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 from torch.utils.data import DataLoader, Dataset
-from torchmetrics import ROC
 
 
 torch.set_float32_matmul_precision("high")
@@ -137,16 +136,14 @@ def apply_nms(pred_dict):
     selected_indices = []
     for ix, (score, box) in enumerate(zip(scores, boxes)):
         for other_box in boxes[selected_indices]:
-            if intersection_over_union(box, other_box) > lambda_nms: break
+            if compute_iou(box, other_box) > lambda_nms: break
         else: selected_indices.append(ix)
     return {'scores':pred_dict['scores'][selected_indices], 'boxes':pred_dict['boxes'][selected_indices], 'labels': pred_dict['labels'][selected_indices]}
 
     
 @torch.no_grad()
-def evaluate(model: nn.Module, val_loader: DataLoader, step: int, logger: Logger, class_mappings: dict[str, int]) -> None:
+def evaluate(model: nn.Module, val_loader: DataLoader, device, step: int, logger: Logger, class_mappings: dict[str, int]) -> None:
     model.eval()
-    raise NotImplementedError('evaluate is not implemented')
-
     idx2class = {v:k for k, v in class_mappings.items()}
     all_predictions = []
     all_ground_truths = []
@@ -154,8 +151,8 @@ def evaluate(model: nn.Module, val_loader: DataLoader, step: int, logger: Logger
     first_batch_images = None
     for batch in val_loader:
         images, targets = batch['images'].to(device), batch['targets']
-        preds = apply_nms(model(images))
-        preds = [{k: v.cpu() for k, v in x.items()} for x in preds]
+        preds = model(images)
+        preds = [{k: v.cpu() for k, v in apply_nms(x).items()} for x in preds]
         all_predictions.extend(preds)
 
         if first_batch_images is None:
@@ -163,7 +160,7 @@ def evaluate(model: nn.Module, val_loader: DataLoader, step: int, logger: Logger
             first_batch_preds = preds[:batch_size]
             first_batch_truths = all_ground_truths[:batch_size]
     fig_sample = plot_sample(first_batch_images, first_batch_preds, first_batch_truths, class_mappings)
-    results = calculate_froc(all_predictions, all_ground_truths)
+    results = calculate_froc(all_predictions, all_ground_truths, len(class_mappings))
     froc_fig = plot_froc(results, step, idx2class)
     auc_froc = auc(results['average']['nlf'], results['average']['llf'])
     eval_metrics = {"auc_froc": auc_froc, 'test_images': fig_sample, 'froc_curves': froc_fig}  # Placeholder for evaluation metrics
@@ -212,9 +209,20 @@ def plot_sample(images: torch.Tensor, predictions: list[dict], ground_truths: li
     plt.tight_layout()
     return fig
 
+def compute_iou(box1, box2):
+    # Calculate intersection
+    x1 = max(box1[0], box2[0])
+    y1 = max(box1[1], box2[1])
+    x2 = min(box1[2], box2[2])
+    y2 = min(box1[3], box2[3])
+    intersection = max(0, x2 - x1) * max(0, y2 - y1)
+    # Calculate union
+    box1_area = (box1[2] - box1[0]) * (box1[3] - box1[1])
+    box2_area = (box2[2] - box2[0]) * (box2[3] - box2[1])
+    union = box1_area + box2_area - intersection
+    return intersection / union if union != 0 else 0
 
-
-def calculate_froc(predictions, truths):
+def calculate_froc(predictions, truths, num_classes):
     '''
     predictions: list[dict[str, torch.tensor]] => 3 Keys: boxes: torch.tensor[N, 4] (xmin, ymin, xmax, ymax), labels: torch.tensor[N], scores: torch.tensor[N]
     truths: list[dict[str, torch.tensor]] => 2 Keys: boxes: torch.tensor[N, 4] (xmin, ymin, xmax, ymax), labels: torch.tensor[N]
@@ -234,18 +242,6 @@ def calculate_froc(predictions, truths):
     '''
     thresholds = [x/10 for x in range(1, 11)]
     iou_threshold = 0.2
-    def compute_iou(box1, box2):
-        # Calculate intersection
-        x1 = max(box1[0], box2[0])
-        y1 = max(box1[1], box2[1])
-        x2 = min(box1[2], box2[2])
-        y2 = min(box1[3], box2[3])
-        intersection = max(0, x2 - x1) * max(0, y2 - y1)
-        # Calculate union
-        box1_area = (box1[2] - box1[0]) * (box1[3] - box1[1])
-        box2_area = (box2[2] - box2[0]) * (box2[3] - box2[1])
-        union = box1_area + box2_area - intersection
-        return intersection / union if union != 0 else 0
     
     results = {class_id: {"llf": [], "nlf": []} for class_id in set(label.item() for truth in truths for label in truth['labels'])}
     results['average'] = {"llf": [], "nlf": []}
@@ -301,7 +297,6 @@ def calculate_froc(predictions, truths):
             results[class_id]['nlf'].append(avg_fp)
     
     # Calculate average results
-    num_classes = len(results) - 1
     for th_index in range(len(thresholds)):
         avg_llf = sum(results[class_id]['llf'][th_index] for class_id in results if class_id != 'average') / num_classes
         avg_nlf = sum(results[class_id]['nlf'][th_index] for class_id in results if class_id != 'average') / num_classes

@@ -155,21 +155,19 @@ def evaluate(model: nn.Module, val_loader: DataLoader, device, step: int, logger
         preds = model(images)
         preds = [{k: v.cpu() for k, v in apply_nms(x).items()} for x in preds]
         all_predictions.extend(preds)
-        print('Preds:', preds)
-
+        all_ground_truths.extend(targets)
         if first_batch_images is None:
             first_batch_images = images
             first_batch_preds = preds
             first_batch_truths = targets
-            break  # TODO: remove this
     fig_sample = plot_sample(first_batch_images, first_batch_preds, first_batch_truths, idx2class)
-    logger.log({'test_images': fig_sample}, step)
-    #results = calculate_froc(all_predictions, all_ground_truths, len(class_mappings))
-    #froc_fig = plot_froc(results, step, idx2class)
-    #auc_froc = auc(results['average']['nlf'], results['average']['llf'])
-    #eval_metrics, sample_images, froc_curves = {"auc_froc": auc_froc}, , {'froc_curves': froc_fig}  # Placeholder for evaluation metrics
-    #logger.log(eval_metrics, step)
-    #logger.log(froc_curves, step)
+    results = calculate_froc(all_predictions, all_ground_truths, len(class_mappings))
+    froc_fig = plot_froc(results, step, idx2class)
+    auc_froc = auc(results['average']['nlf'], results['average']['llf'])
+    eval_metrics, sample_images, froc_curves = {"auc_froc": auc_froc}, {'test_images': fig_sample}, {'froc_curves': froc_fig}  # Placeholder for evaluation metrics
+    logger.log(eval_metrics, step)
+    logger.log(sample_images, step)
+    logger.log(froc_curves, step)
 
 
 def plot_sample(images: torch.Tensor, predictions: list[dict], ground_truths: list[dict], idx2class: dict[int, str]) -> plt.Figure:
@@ -185,7 +183,6 @@ def plot_sample(images: torch.Tensor, predictions: list[dict], ground_truths: li
     for idx, (img, pred, truths) in enumerate(zip(images, predictions, ground_truths)):
         ax = axes[idx]
         img = transform(img.cpu())
-        img.save(f'image_{idx}.png')
         ax.imshow(img)
 
         pred_boxes = pred['boxes']
@@ -229,11 +226,9 @@ def compute_iou(box1, box2):
 
 
 
-def calculate_froc(predictions: List[Dict[str, torch.Tensor]], 
-                   truths: List[Dict[str, torch.Tensor]], 
-                   num_classes: int) -> Dict[Union[int, str], Dict[str, List[float]]]:
+def calculate_froc(predictions: List[Dict[str, torch.Tensor]], truths: List[Dict[str, torch.Tensor]], num_classes: int) -> Dict[Union[int, str], Dict[str, List[float]]]:
     thresholds = [x / 10 for x in range(1, 11)]
-    iou_threshold: float = 0.2
+    iou_threshold: float = 0.2  # as per Grand Challenge
 
     results: Dict[Union[int, str], Dict[str, List[float]]] = {
         class_id: {"llf": [], "nlf": []} for class_id in set(label.item() for truth in truths for label in truth['labels'])
@@ -294,15 +289,11 @@ def calculate_froc(predictions: List[Dict[str, torch.Tensor]],
             results[class_id]['llf'].append(avg_tp)
             results[class_id]['nlf'].append(avg_fp)
 
-            print(f"Class {class_id}, Threshold {th}: TP={avg_tp}, FP={avg_fp}")
-
     for th_index in range(len(thresholds)):
         avg_llf = sum(results[class_id]['llf'][th_index] for class_id in results if class_id != 'average') / num_classes
         avg_nlf = sum(results[class_id]['nlf'][th_index] for class_id in results if class_id != 'average') / num_classes
         results['average']['llf'].append(avg_llf)
         results['average']['nlf'].append(avg_nlf)
-
-        print(f"Average at Threshold {thresholds[th_index]}: LLF={avg_llf}, NLF={avg_nlf}")
 
     return results
 
@@ -401,10 +392,6 @@ def main():
     step = 0
     batch_gen = next_batch(train_loader)
     grad_accumulation_steps = config["desired_batch_size"] // config["batch_size"]
-
-    # TODO: remove this. just using for testing
-    evaluate(model, val_loader, device, 1, logger, config["class_mapping"])
-    exit(0)
 
     while step < config["num_steps"]:
         step += 1

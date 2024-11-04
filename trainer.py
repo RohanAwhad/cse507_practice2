@@ -15,6 +15,7 @@ import yaml
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from sklearn.metrics import auc
+from tqdm import tqdm
 from typing import Dict, List, Optional, Tuple, Union
 
 import torch
@@ -148,25 +149,27 @@ def evaluate(model: nn.Module, val_loader: DataLoader, device, step: int, logger
     all_predictions = []
     all_ground_truths = []
     batch_size = None
-    first_batch_images = None
-    for batch in val_loader:
+    first_batch_images, first_batch_preds, first_batch_truths = None, None, None
+    for batch in tqdm(val_loader, total=len(val_loader), desc='Validation'):
         images, targets = batch['images'].to(device), batch['targets']
         preds = model(images)
         preds = [{k: v.cpu() for k, v in apply_nms(x).items()} for x in preds]
         all_predictions.extend(preds)
+        print('Preds:', preds)
 
         if first_batch_images is None:
-            first_batch_images = images[:batch_size]
-            first_batch_preds = preds[:batch_size]
-            first_batch_truths = all_ground_truths[:batch_size]
-    fig_sample = plot_sample(first_batch_images, first_batch_preds, first_batch_truths, class_mappings)
-    results = calculate_froc(all_predictions, all_ground_truths, len(class_mappings))
-    froc_fig = plot_froc(results, step, idx2class)
-    auc_froc = auc(results['average']['nlf'], results['average']['llf'])
-    eval_metrics, sample_images, froc_curves = {"auc_froc": auc_froc}, {'test_images': fig_sample}, {'froc_curves': froc_fig}  # Placeholder for evaluation metrics
-    logger.log(eval_metrics, step)
-    logger.log(sample_images, step)
-    logger.log(froc_curves, step)
+            first_batch_images = images
+            first_batch_preds = preds
+            first_batch_truths = targets
+            break  # TODO: remove this
+    fig_sample = plot_sample(first_batch_images, first_batch_preds, first_batch_truths, idx2class)
+    logger.log({'test_images': fig_sample}, step)
+    #results = calculate_froc(all_predictions, all_ground_truths, len(class_mappings))
+    #froc_fig = plot_froc(results, step, idx2class)
+    #auc_froc = auc(results['average']['nlf'], results['average']['llf'])
+    #eval_metrics, sample_images, froc_curves = {"auc_froc": auc_froc}, , {'froc_curves': froc_fig}  # Placeholder for evaluation metrics
+    #logger.log(eval_metrics, step)
+    #logger.log(froc_curves, step)
 
 
 def plot_sample(images: torch.Tensor, predictions: list[dict], ground_truths: list[dict], idx2class: dict[int, str]) -> plt.Figure:
@@ -175,12 +178,14 @@ def plot_sample(images: torch.Tensor, predictions: list[dict], ground_truths: li
 
     transform = T.ToPILImage()
     num_images: int = len(images)
+    print('NUM of IMAGES:', num_images)
     fig, axes = plt.subplots(1, num_images, figsize=(15, 5))
     
     if num_images == 1: axes = [axes]
     for idx, (img, pred, truths) in enumerate(zip(images, predictions, ground_truths)):
         ax = axes[idx]
         img = transform(img.cpu())
+        img.save(f'image_{idx}.png')
         ax.imshow(img)
 
         pred_boxes = pred['boxes']
@@ -381,13 +386,6 @@ def main():
         collate_fn=collate_fn,
     )
     print('DataLoaders created')
-
-    # TODO: remove this. just testing if loader works fine
-    for batch in train_loader:
-        print(batch)
-        break
-
-
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
     model = build_model(config['model_name'], config['pretrained_flag'], len(config['class_mapping']))

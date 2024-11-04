@@ -1,15 +1,15 @@
 # Hyperparameters
 desired_batch_size: 16
 batch_size: 8
-num_steps: 100
+num_steps: 1000
 n_val_shards: 1
 
 # lr scheduler
 # max steps: ~1epoch | warmup_steps: int(config['max_steps'] * 0.037) based on nanogpt | max_lr 3e-4 | min_lr: 3e-5
-max_steps: 50
-warmup_steps: 10
-max_lr: 0.0001
-min_lr: 0.00001
+max_steps: 330
+warmup_steps: 13
+max_lr: 0.001
+min_lr: 0.0001
 
 # Model Configuration
 model_name: ""  # faster-rcnn has only one model config so using that as default
@@ -22,7 +22,7 @@ prefetch_factor: null
 shard_size: 1024
 
 # Training and Checkpointing
-eval_interval: 10
+eval_interval: 50
 ckpt_interval: 5000
 ckpt_dir: "/scratch/rawhad/CSE507/practice_2_v2/models"
 do_ckpt: true

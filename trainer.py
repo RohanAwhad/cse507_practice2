@@ -148,7 +148,6 @@ def evaluate(model: nn.Module, val_loader: DataLoader, device, step: int, logger
     idx2class = {v:k for k, v in class_mappings.items()}
     all_predictions = []
     all_ground_truths = []
-    batch_size = None
     first_batch_images, first_batch_preds, first_batch_truths = None, None, None
     for batch in tqdm(val_loader, total=len(val_loader), desc='Validation'):
         images, targets = batch['images'].to(device), batch['targets']
@@ -164,7 +163,15 @@ def evaluate(model: nn.Module, val_loader: DataLoader, device, step: int, logger
     results = calculate_froc(all_predictions, all_ground_truths, len(class_mappings))
     froc_fig = plot_froc(results, step, idx2class)
     auc_froc = auc(results['average']['nlf'], results['average']['llf'])
-    eval_metrics, sample_images, froc_curves = {"auc_froc": auc_froc}, {'test_images': fig_sample}, {'froc_curves': froc_fig}  # Placeholder for evaluation metrics
+
+    # transform results for wandb
+    new_results = {}
+    for class_id, v in results.items():
+        class_label = idx2class[class_id] if class_id != 'average' else 'average'
+        new_results[class_label] = {}
+        for i, (l, n) in enumerate(zip(v['llf'], v['nlf'])): new_results[class_label][(i+1)/10] = {'llf': l, 'nlf': n}
+
+    eval_metrics, sample_images, froc_curves = {"auc_froc": auc_froc, 'all_results_from_val': new_results}, {'test_images': fig_sample}, {'froc_curves': froc_fig}  # Placeholder for evaluation metrics
     logger.log(eval_metrics, step)
     logger.log(sample_images, step)
     logger.log(froc_curves, step)
@@ -191,7 +198,7 @@ def plot_sample(images: torch.Tensor, predictions: list[dict], ground_truths: li
 
         # Select only boxes with score >= 0.5
         for box, label, score in zip(pred_boxes, pred_labels, pred_scores):
-            if score >= 0.5:
+            if score >= 0.2:
                 xmin, ymin, xmax, ymax = box
                 rect = plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin, fill=False, color='blue', linewidth=2)
                 ax.add_patch(rect)
@@ -227,7 +234,7 @@ def compute_iou(box1, box2):
 
 
 def calculate_froc(predictions: List[Dict[str, torch.Tensor]], truths: List[Dict[str, torch.Tensor]], num_classes: int) -> Dict[Union[int, str], Dict[str, List[float]]]:
-    thresholds = [x / 10 for x in range(1, 11)]
+    thresholds = [x / 10 for x in range(1, 10)]
     iou_threshold: float = 0.2  # as per Grand Challenge
 
     results: Dict[Union[int, str], Dict[str, List[float]]] = {
@@ -323,7 +330,7 @@ def plot_froc(results: dict[str | int, dict[str, list[int]]], step: int, idx2cla
         if class_id == 'average':
             continue
         class_name = idx2class.get(class_id, f'Class {class_id}')
-        ax = axes[i]
+        ax = axes[i+1]
         ax.plot(metrics['nlf'], metrics['llf'], label=class_name)
         ax.set_title(class_name)
         ax.set_xlabel('False Positives per Image (NLF)')

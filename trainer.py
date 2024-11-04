@@ -163,8 +163,10 @@ def evaluate(model: nn.Module, val_loader: DataLoader, device, step: int, logger
     results = calculate_froc(all_predictions, all_ground_truths, len(class_mappings))
     froc_fig = plot_froc(results, step, idx2class)
     auc_froc = auc(results['average']['nlf'], results['average']['llf'])
-    eval_metrics = {"auc_froc": auc_froc, 'test_images': fig_sample, 'froc_curves': froc_fig}  # Placeholder for evaluation metrics
+    eval_metrics, sample_images, froc_curves = {"auc_froc": auc_froc}, {'test_images': fig_sample}, {'froc_curves': froc_fig}  # Placeholder for evaluation metrics
     logger.log(eval_metrics, step)
+    logger.log(sample_images, step)
+    logger.log(froc_curves, step)
 
 
 def plot_sample(images: torch.Tensor, predictions: list[dict], ground_truths: list[dict], idx2class: dict[int, str]) -> plt.Figure:
@@ -175,9 +177,7 @@ def plot_sample(images: torch.Tensor, predictions: list[dict], ground_truths: li
     num_images: int = len(images)
     fig, axes = plt.subplots(1, num_images, figsize=(15, 5))
     
-    if num_images == 1:
-        axes = [axes]
-
+    if num_images == 1: axes = [axes]
     for idx, (img, pred, truths) in enumerate(zip(images, predictions, ground_truths)):
         ax = axes[idx]
         img = transform(img.cpu())
@@ -222,32 +222,27 @@ def compute_iou(box1, box2):
     union = box1_area + box2_area - intersection
     return intersection / union if union != 0 else 0
 
-def calculate_froc(predictions, truths, num_classes):
-    '''
-    predictions: list[dict[str, torch.tensor]] => 3 Keys: boxes: torch.tensor[N, 4] (xmin, ymin, xmax, ymax), labels: torch.tensor[N], scores: torch.tensor[N]
-    truths: list[dict[str, torch.tensor]] => 2 Keys: boxes: torch.tensor[N, 4] (xmin, ymin, xmax, ymax), labels: torch.tensor[N]
 
-    Calculate FROC for each class and overall froc score for each threshold.
-    # filter based on label
-    # for th in thresholds
-    #   apply th to filtered preds
-    #   for p, l in zip(predictions, labels):
-    #       for obj in l:
-    #           find all the pred_dets from p with iou>0.2 with obj, select the one with highest score
-    #           record it as true positive
-    #       do it for all obj in l, and then the count of not matched_set is your false positive
-    #   get average tp and fp
-    #   record the avg tp and fp, along with th for this label
-    # lastly I want to have a dict that is: {class_id: {llf: [tp_at_0.1, tp_at_0.2 ...], nlf: [fp_at_0.1, fp_at_0.2 ...]}, ..., average: {llf: [...], nlf: [...]}}
-    '''
-    thresholds = [x/10 for x in range(1, 11)]
-    iou_threshold = 0.2
-    
-    results = {class_id: {"llf": [], "nlf": []} for class_id in set(label.item() for truth in truths for label in truth['labels'])}
+
+def calculate_froc(predictions: List[Dict[str, torch.Tensor]], 
+                   truths: List[Dict[str, torch.Tensor]], 
+                   num_classes: int) -> Dict[Union[int, str], Dict[str, List[float]]]:
+    thresholds = [x / 10 for x in range(1, 11)]
+    iou_threshold: float = 0.2
+
+    results: Dict[Union[int, str], Dict[str, List[float]]] = {
+        class_id: {"llf": [], "nlf": []} for class_id in set(label.item() for truth in truths for label in truth['labels'])
+    }
     results['average'] = {"llf": [], "nlf": []}
+
     for class_id in results.keys():
-        if class_id == 'average': continue
+        if class_id == 'average':
+            continue
+        
         for th in thresholds:
+            tpr: List[float] = []
+            fpr: List[float] = []
+            
             for pred, truth in zip(predictions, truths):
                 pred_boxes = pred['boxes']
                 pred_scores = pred['scores']
@@ -256,7 +251,6 @@ def calculate_froc(predictions, truths, num_classes):
                 truth_boxes = truth['boxes']
                 truth_labels = truth['labels']
                 
-                # Filter predictions and truths based on class_id
                 pred_indices = (pred_labels == class_id).nonzero(as_tuple=True)[0]
                 truth_indices = (truth_labels == class_id).nonzero(as_tuple=True)[0]
                 
@@ -267,41 +261,44 @@ def calculate_froc(predictions, truths, num_classes):
                 
                 matched_truths = set()
                 
-                # Apply threshold
                 th_indices = (pred_scores >= th).nonzero(as_tuple=True)[0]
                 pred_boxes = pred_boxes[th_indices]
                 pred_scores = pred_scores[th_indices]
-                
-                # Evaluate each truth object
+
                 for truth_idx, truth_box in enumerate(truth_boxes):
                     max_iou = 0
                     best_pred_idx = -1
                     
-                    # Find best matching prediction
                     for pred_idx, pred_box in enumerate(pred_boxes):
-                        if pred_idx in matched_truths: continue
+                        if pred_idx in matched_truths:
+                            continue
                         iou = compute_iou(truth_box, pred_box)
                         if iou > iou_threshold and iou > max_iou:
                             max_iou = iou
                             best_pred_idx = pred_idx
-                    if best_pred_idx != -1: matched_truths.add(best_pred_idx)
-                
-                # Calculate false positives
-                tpr.append(len(matched_truths)/len(truth_boxes) if n_targets else 0)
-                fpr.append(len(pred_boxes) - len(matched_truths)/len(pred_boxes) if len(pred_boxes) else 0)
-            
+                    if best_pred_idx != -1:
+                        matched_truths.add(best_pred_idx)
+
+                n_targets = len(truth_boxes)
+                tpr.append(len(matched_truths) / n_targets if n_targets else 0)
+                fpr.append((len(pred_boxes) - len(matched_truths)) / len(pred_boxes) if len(pred_boxes) else 0)
+
             avg_tp = sum(tpr) / len(tpr) if tpr else 0
             avg_fp = sum(fpr) / len(fpr) if fpr else 0
             
             results[class_id]['llf'].append(avg_tp)
             results[class_id]['nlf'].append(avg_fp)
-    
-    # Calculate average results
+
+            print(f"Class {class_id}, Threshold {th}: TP={avg_tp}, FP={avg_fp}")
+
     for th_index in range(len(thresholds)):
         avg_llf = sum(results[class_id]['llf'][th_index] for class_id in results if class_id != 'average') / num_classes
         avg_nlf = sum(results[class_id]['nlf'][th_index] for class_id in results if class_id != 'average') / num_classes
         results['average']['llf'].append(avg_llf)
         results['average']['nlf'].append(avg_nlf)
+
+        print(f"Average at Threshold {thresholds[th_index]}: LLF={avg_llf}, NLF={avg_nlf}")
+
     return results
 
 
@@ -406,6 +403,11 @@ def main():
     step = 0
     batch_gen = next_batch(train_loader)
     grad_accumulation_steps = config["desired_batch_size"] // config["batch_size"]
+
+    # TODO: remove this. just using for testing
+    evaluate(model, val_loader, device, 1, logger, config["class_mapping"])
+    exit(0)
+
     while step < config["num_steps"]:
         step += 1
         if step % config["eval_interval"] == 0:
@@ -441,42 +443,4 @@ def main():
     logger.log({"status": "Training finished"}, step=step)
 
 if __name__ == "__main__":
-    #main()
-    # test plot_froc and plot_sample using dummy data or sample data
-    # Example data for testing (you can replace this with actual data)
-    sample_images = torch.rand(4, 3, 256, 256)  # 4 images, 3 channels, 256x256
-    sample_predictions = [
-        {
-            'boxes': torch.tensor([[50, 50, 100, 100], [150, 150, 200, 200]]),
-            'scores': torch.tensor([0.9, 0.8]),
-            'labels': torch.tensor([1, 1])
-        } for _ in range(4)
-    ]
-    sample_ground_truths = [
-        {
-            'boxes': torch.tensor([[60, 60, 110, 110], [140, 140, 190, 190]]),
-            'labels': torch.tensor([1, 1])
-        } for _ in range(4)
-    ]
-
-    idx2class = {1: 'Class 1'}
-
-    # Plot sample images with predictions and ground truths
-    fig_sample = plot_sample(sample_images, sample_predictions, sample_ground_truths, idx2class)
-    plt.show(fig_sample)
-
-    # Example results for testing plot_froc (replace with actual results)
-    sample_results = {
-        'average': {
-            'llf': [0.1, 0.2, 0.3],
-            'nlf': [0.1, 0.15, 0.2]
-        },
-        1: {
-            'llf': [0.15, 0.25, 0.35],
-            'nlf': [0.05, 0.1, 0.15]
-        }
-    }
-
-    # Plot FROC curve
-    fig_froc = plot_froc(sample_results, step=0, idx2class=idx2class)
-    plt.show(fig_froc)
+    main()

@@ -177,44 +177,56 @@ def evaluate(model: nn.Module, val_loader: DataLoader, device, step: int, logger
     logger.log(froc_curves, step)
 
 
-def plot_sample(images: torch.Tensor, predictions: list[dict], ground_truths: list[dict], idx2class: dict[int, str]) -> plt.Figure:
+# Define the improved plot_sample function for visualization
+def plot_sample(images, predictions, ground_truths, idx2class):
     import matplotlib.pyplot as plt
     import torchvision.transforms as T
 
     transform = T.ToPILImage()
-    num_images: int = len(images)
-    print('NUM of IMAGES:', num_images)
-    fig, axes = plt.subplots(1, num_images, figsize=(15, 5))
+    num_images = len(images)
+    fig_width = max(18, 6 * num_images)  # Adjust figure width for optimal spacing
+    fig, axes = plt.subplots(1, num_images, figsize=(fig_width, 7))
     
-    if num_images == 1: axes = [axes]
+    # Ensure axes is always iterable
+    if num_images == 1:
+        axes = [axes]
+    
     for idx, (img, pred, truths) in enumerate(zip(images, predictions, ground_truths)):
         ax = axes[idx]
-        img = transform(img.cpu())
-        ax.imshow(img)
-
-        pred_boxes = pred['boxes']
-        pred_scores = pred['scores']
-        pred_labels = pred['labels']
-
-        # Select only boxes with score >= 0.5
-        for box, label, score in zip(pred_boxes, pred_labels, pred_scores):
-            if score >= 0.2:
+        
+        # Convert image to PIL format for plotting
+        img_pil = transform(img.cpu())
+        ax.imshow(img_pil)  # Use grayscale for clear contrast
+        
+        # Plot predicted boxes with a threshold score for improved filtering
+        for box, label, score in zip(pred['boxes'], pred['labels'], pred['scores']):
+            if score >= 0.5:  # Higher threshold to show confident predictions only
                 xmin, ymin, xmax, ymax = box
-                rect = plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin, fill=False, color='blue', linewidth=2)
+                rect = plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin, 
+                                     edgecolor='blue', linewidth=2.5, fill=False)
                 ax.add_patch(rect)
-                label_name: str = idx2class[int(label)]
-                ax.text(xmin, ymin, f'{label_name}: {score:.2f}', color='red', fontsize=8, bbox=dict(facecolor='yellow', alpha=0.5))
+                
+                label_name = idx2class[int(label)]
+                ax.text(xmin, ymin - 2, f'{label_name}: {score:.2f}', 
+                        color='white', fontsize=9, fontweight='bold',
+                        bbox=dict(facecolor='blue', alpha=0.7, edgecolor='none', pad=1))
 
-        # Plot truth boxes
-        truth_boxes = truths['boxes']
-        truth_labels = truths['labels']
-        for box, label in zip(truth_boxes, truth_labels):
+        # Plot ground truth boxes with distinctive color and position
+        for box, label in zip(truths['boxes'], truths['labels']):
             xmin, ymin, xmax, ymax = box
-            rect = plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin, fill=False, color='green', linewidth=2)
+            rect = plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin, 
+                                 edgecolor='lime', linewidth=2.5, fill=False)
             ax.add_patch(rect)
-            label_name: str = idx2class[int(label)]
-            ax.text(xmin, ymin, label_name, color='green', fontsize=8, bbox=dict(facecolor='yellow', alpha=0.5))
+            
+            label_name = idx2class[int(label)]
+            ax.text(xmin, ymax + 5, label_name, 
+                    color='black', fontsize=9, fontweight='bold',
+                    bbox=dict(facecolor='lime', alpha=0.7, edgecolor='none', pad=1))
+
+        # Remove axis for a cleaner look
         ax.axis('off')
+    
+    plt.subplots_adjust(wspace=0.1)  # Reduce whitespace between images
     plt.tight_layout()
     return fig
 

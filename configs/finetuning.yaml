@@ -8,8 +8,8 @@ n_val_shards: 3
 # max steps: ~1epoch | warmup_steps: int(config['max_steps'] * 0.037) based on nanogpt | max_lr 3e-4 | min_lr: 3e-5
 max_steps: 704
 warmup_steps: 27
-max_lr: 0.002
-min_lr: 0.0002
+max_lr: 0.001
+min_lr: 0.0001
 
 # Model Configuration
 model_name: ""  # faster-rcnn has only one model config so using that as default

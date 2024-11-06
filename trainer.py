@@ -76,7 +76,11 @@ def load_config():
         exit(0)
     config_file = sys.argv[1]
     with open(config_file, 'r') as file:
-        return yaml.safe_load(file)
+        config = yaml.safe_load(file)
+    if len(sys.argv) > 2:
+        print("Setting run name:", sys.argv[2])
+        config["run_name"] = sys.argv[2]
+    return config
 
 
 @functools.lru_cache(maxsize=3)

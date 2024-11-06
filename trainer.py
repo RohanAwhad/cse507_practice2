@@ -79,7 +79,7 @@ def load_config():
         return yaml.safe_load(file)
 
 
-@functools.lru_cache(maxsize=2)
+@functools.lru_cache(maxsize=3)
 def load_shard(filepath: str) -> dict[str, np.array]:
   # Load the compressed object
   with gzip.open(filepath, 'rb') as f:
@@ -99,7 +99,7 @@ class ShardedDataset(Dataset):
 
 def collate_fn(batch):
     targets = [{'boxes': torch.tensor(item['targets']['bbox']).float(), 'labels': torch.tensor(item['targets']['labels']).long()} for item in batch]
-    images = torch.tensor([item['images'] for item in batch]).float()
+    images = torch.tensor(np.array([item['images'] for item in batch])).float()
     return {'images': images, 'targets': targets}
 
 def build_model(model_name: str, pretrained_flag: bool, num_classes: int) -> nn.Module:
@@ -386,6 +386,7 @@ def main():
         pin_memory=True,
         prefetch_factor=config['prefetch_factor'],
         collate_fn=collate_fn,
+        persistent_workers=True,
     )
     val_loader = DataLoader(
         val_dataset,
@@ -394,6 +395,7 @@ def main():
         pin_memory=True,
         prefetch_factor=config['prefetch_factor'],
         collate_fn=collate_fn,
+        persistent_workers=True,
     )
     print('DataLoaders created')
     device = "cuda" if torch.cuda.is_available() else "cpu"

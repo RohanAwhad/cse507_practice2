@@ -3,6 +3,7 @@ desired_batch_size: 32
 batch_size: 32
 num_steps: 10560  # 704 steps is one epoch
 n_val_shards: 3
+max_grad_norm: 1.0  # gradient clipping
 
 # lr scheduler
 # max steps: ~1epoch | warmup_steps: int(config['max_steps'] * 0.037) based on nanogpt | max_lr 3e-4 | min_lr: 3e-5

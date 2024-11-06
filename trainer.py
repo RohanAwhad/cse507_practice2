@@ -443,6 +443,12 @@ def main():
             loss = losses["total_loss"]
             loss.backward()
             for k, v in losses.items(): step_loss[k] += v.item()
+
+        # Gradient clipping
+        max_grad_norm = config.get('max_grad_norm', None)
+        if max_grad_norm is not None:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+        # get learning rate
         lr = lr_scheduler.get_lr(step)
         for param_group in optimizer.param_groups: param_group["lr"] = lr
         optimizer.step()

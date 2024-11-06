@@ -361,6 +361,7 @@ def plot_froc(results: dict[str | int, dict[str, list[int]]], step: int, idx2cla
 def save_checkpoint(model: nn.Module, optimizer: torch.optim.Optimizer, ckpt_dir: str, step: int) -> None:
     """Placeholder for checkpointing logic."""
     model.eval()
+    os.makedirs(ckpt_dir, exist_ok=True)
     ckpt_path = os.path.join(ckpt_dir, f"checkpoint_step_{step}.pth")
     torch.save({'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict()}, ckpt_path)
     print(f"Checkpoint saved at step {step}")
@@ -421,7 +422,7 @@ def main():
             evaluate(model, val_loader, device, step, logger, config["class_mapping"])
         if step % config["ckpt_interval"] == 0 and config["do_ckpt"]:
             print(f"Step {step}: Saving checkpoint")
-            save_checkpoint(model, os.path.join(config["ckpt_dir"], config["run_name"]), step)
+            save_checkpoint(model, optimizer, os.path.join(config["ckpt_dir"], config["run_name"]), step)
         # train
         model.train()
         optimizer.zero_grad()
